@@ -51,7 +51,7 @@ const dbConnection = createConnection({
   entities: Entities,
 })
 
-const setup = (rpc: string, registry: string) => {
+const createIssuerAgent = (rpc: string, registry: string) => {
   const keyManager = new KeyManager({
     store: new KeyStore(dbConnection),
     kms: {
@@ -95,12 +95,32 @@ const setup = (rpc: string, registry: string) => {
   return agent;
 }
 
+const createVerifierAgent = (rpc: string, registry: string) => {
+  const providerConfiguration = {
+    defaultKms: 'local',
+    network: 1337,
+    rpcUrl: rpc,
+    registry: registry
+  };
+  const verifierAgent = createAgent<IResolver & IMessageHandler>({
+    plugins: [
+      new DIDResolverPlugin({
+        resolver: new Resolver({
+          ...ethrDidResolver({ networks: [{ ...providerConfiguration, name: '1337' }] }),
+        })
+      }),
+      new MessageHandler({
+        messageHandlers: [new JwtMessageHandler(), new W3cMessageHandler()],
+      }),
+    ],
+  });
+  return verifierAgent;
+}
+
 const main = async (rpc: string, registry: string, privateKey: string) => {
-  let res: any;
-  const agent = setup(rpc, registry);
+  const agent = createIssuerAgent(rpc, registry);
 
   const pubkey = computePublicKey('0x' + privateKey)
-  const address = computeAddress(pubkey);
   const keyObj: MinimalImportableKey = {
     kms: 'local',
     privateKeyHex: privateKey,
@@ -108,43 +128,40 @@ const main = async (rpc: string, registry: string, privateKey: string) => {
     kid: pubkey
   }
 
+  const address = computeAddress(pubkey);
   const did = "did:ethr:1337:" + address
 
+  // Add DID-Ethr
   const newDidObj: MinimalImportableIdentifier = {
     keys: [keyObj],
     provider: 'did:ethr',
     did,
     controllerKeyId: pubkey
   };
+  const didImportRes = await agent.didManagerImport(newDidObj);
 
-  res = await agent.didManagerImport(newDidObj);
-
-  // console.log('did:', res);
+  console.log('did:', didImportRes);
 
   // add key
   const key = await agent.keyManagerCreate({ kms: 'local', type: 'Secp256k1' });
-  await agent.didManagerAddKey({ did, key, options: {} });
+  await agent.didManagerAddKey({ did, key });
 
-  // // set service
-  // await agent.didManagerAddService({
-  //   did: veramoDid.did,
-  //   service: {
-  //     id: 'hogehoge',
-  //     serviceEndpoint: 'http://chike.xyz',
-  //     type: 'test'
-  //   },
-  //   options: {}
-  // })
-  //   .catch((e: any) => {
-  //     console.error(e);
-  //     return;
-  //   });
+  // set service
+  const addKeyRes = await agent.didManagerAddService({
+    did,
+    service: {
+      id: 'hogehoge',
+      serviceEndpoint: 'http://chike.xyz',
+      type: 'test'
+    },
+  });
+  console.log('Add Key res:', addKeyRes);
 
-  // // resolve
-  // res = await agent.resolveDid({
-  //   didUrl: "did:ethr:1337:" + address
-  // })
-  // console.log(JSON.stringify(res, null, 2));
+  // resolve
+  const didResolveRes = await agent.resolveDid({
+    didUrl: "did:ethr:1337:" + address
+  })
+  console.log('DID Document: ', JSON.stringify(didResolveRes, null, 2));
 
   // Issue Verifiable Credential
   const vcSubject = {
@@ -165,29 +182,12 @@ const main = async (rpc: string, registry: string, privateKey: string) => {
   const vc: VerifiableCredential = await agent.createVerifiableCredential(vcIssueArgs)
   console.log('vc:', vc);
 
-
-  const providerConfiguration = {
-    defaultKms: 'local',
-    network: 1337,
-    rpcUrl: rpc,
-    registry: registry
-  }
-  const verifierAgent = createAgent<IResolver & IMessageHandler>({
-    plugins: [
-      new DIDResolverPlugin({
-        resolver: new Resolver({
-          ...ethrDidResolver({ networks: [{ ...providerConfiguration, name: '1337' }] }),
-        })
-      }),
-      new MessageHandler({
-        messageHandlers: [new JwtMessageHandler(), new W3cMessageHandler()],
-      }),
-    ],
-  });
+  // verify VC
+  const verifierAgent = createVerifierAgent(rpc, registry);
   const vcMessage = await verifierAgent.handleMessage({
     raw: vc.proof.jwt
   });
-  console.log(vcMessage);
+  console.log('VC Message:', vcMessage);
 
   // Create Presentation
   const createVpArgs: ICreateVerifiablePresentationArgs = {
@@ -200,11 +200,13 @@ const main = async (rpc: string, registry: string, privateKey: string) => {
     proofFormat: 'jwt',
   }
   const vp = await agent.createVerifiablePresentation(createVpArgs);
-  console.log(vp)
+  console.log('VP:', vp)
+
+  // Verify VP
   const vpMessage = await verifierAgent.handleMessage({
     raw: vp.proof.jwt
   });
-  console.log(vpMessage);
+  console.log('VP Message:', vpMessage);
 }
 
 export default main;

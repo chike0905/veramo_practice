@@ -90,4 +90,4 @@ afterEach(async () => {
 // ------ TEST BODY ------
 it('hoge', async () => {
   await main(env.urlWithPort, registry, ACCOUNTS.Sender.PrivateKey);
-});
+}, 10000);
